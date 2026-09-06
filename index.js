@@ -16,9 +16,10 @@ var proxy = require('./proxy.js');
 var likeApi = require('./like.js');
 var util = require('util');
 
-// A double-press of next/previous within this window is treated as a
-// like/dislike gesture for the track that was playing before the press.
-const DOUBLE_PRESS_MS = 700;
+// If the heart is un-favourited within this window of being favourited,
+// it's read as "actually I dislike this" rather than "I changed my mind
+// about liking it" - see addToFavourites/removeFromFavourites.
+const QUICK_TOGGLE_MS = 1500;
 
 module.exports = yandexMusic;
 
@@ -37,10 +38,8 @@ function yandexMusic(context) {
     self.playlists = {};
     self.current_track = false;
     self.positionAtPrefetch = -1;
-    self.lastNextTs = 0;
-    self.lastPrevTs = 0;
-    self.lastNextTrack = false;
-    self.lastPrevTrack = false;
+    self.lastLikeTs = 0;
+    self.lastLikeTrack = false;
 
     self.proxy = new proxy();
 }
@@ -848,8 +847,6 @@ yandexMusic.prototype.resume = function () {
 yandexMusic.prototype.next = function() {
     var self = this;
 
-    self.checkDoublePress('next');
-
     self.commandRouter.stateMachine.setConsumeUpdateService('mpd');
     return self.mpdPlugin.next();
 }
@@ -858,87 +855,73 @@ yandexMusic.prototype.next = function() {
 yandexMusic.prototype.previous = function() {
     var self = this;
 
-    self.checkDoublePress('previous');
-
     self.commandRouter.stateMachine.setConsumeUpdateService('mpd');
     return self.mpdPlugin.previous();
 }
 
-// A double-press of next (or previous) is used as a like (or dislike)
-// gesture. The track id is captured on the first press rather than
-// re-read on the second, so a slow track change in between can't make us
-// like/dislike the wrong track.
-yandexMusic.prototype.checkDoublePress = function(direction) {
+// Called by Volumio's playlistManager when the user hits the native
+// favourite/heart button, instead of (not in addition to) the generic
+// local-favourites-playlist handling - see playlistManager.addToFavourites,
+// which only falls back to the generic path when this method is absent.
+// We also mirror the add into Volumio's own favourites list ourselves so
+// the heart icon still reflects the liked state in the UI.
+yandexMusic.prototype.addToFavourites = function(data) {
     var self = this;
 
-    var ts_key = (direction == 'next') ? 'lastNextTs' : 'lastPrevTs';
-    var track_key = (direction == 'next') ? 'lastNextTrack' : 'lastPrevTrack';
-    var now = Date.now();
-    var delta = now - self[ts_key];
-    var is_double = delta < DOUBLE_PRESS_MS;
-
-    self.logger.info('[yandex_music] ' + direction + '() pressed, delta=' + delta + 'ms, is_double=' + is_double +
-        ', current_track=' + (self.current_track ? self.current_track.track_id : 'none'));
-
-    if (is_double) {
-        self[ts_key] = 0;
-        if (self[track_key]) {
-            self.logger.info('[yandex_music] double-press detected, track_id=' + self[track_key]);
-            if (direction == 'next') {
-                self.likeTrackById(self[track_key]);
-            } else {
-                self.dislikeTrackById(self[track_key]);
-            }
-        } else {
-            self.logger.info('[yandex_music] double-press detected but no captured track_id');
-        }
-    } else {
-        self[ts_key] = now;
-        self[track_key] = (self.current_track && self.current_track.track_id) ?
-            self.current_track.track_id.split('@')[0].split(':')[0] : false;
-    }
-};
-
-yandexMusic.prototype.likeTrackById = function(track_id) {
-    var self = this;
-
-    self.logger.info('[yandex_music] likeTrackById(' + track_id + '), uid=' + self.uid);
+    var track_id = data.uri.split('/').pop().split('@')[0].split(':')[0];
 
     if (!self.uid) {
-        self.logger.info('[yandex_music] likeTrackById aborted: no uid');
-        return;
+        self.logger.error('[yandex_music] addToFavourites aborted: no uid');
+        return libQ.reject(new Error('no_uid'));
     }
 
-    likeApi.likeTrack(self.client, self.uid, track_id).then(function () {
-        self.logger.info('[yandex_music] likeTrack succeeded for ' + track_id);
-        self.commandRouter.pushToastMessage('success', self.getI18n('YAM_ACCOUNT'), self.getI18n('TRACK_LIKED'));
-    }).fail(function (err) {
+    self.lastLikeTs = Date.now();
+    self.lastLikeTrack = track_id;
+
+    // Fired in the background, not chained: the local favourites write
+    // below must happen immediately (like Volumio's own removeFromFavourites
+    // does), otherwise a quick like-then-unlike race can leave the heart
+    // icon showing "liked" after the network round trip finally lands.
+    likeApi.likeTrack(self.client, self.uid, track_id).fail(function (err) {
         self.logger.error('[yandex_music] Unable to like track: ', err);
     });
     likeApi.undislikeTrack(self.client, self.uid, track_id).fail(function (err) {
         self.logger.error('[yandex_music] Unable to undislike track: ', err);
     });
+
+    return self.commandRouter.playListManager.commonAddToPlaylist(
+        self.commandRouter.playListManager.favouritesPlaylistFolder, 'favourites', data.service, data.uri);
 };
 
-yandexMusic.prototype.dislikeTrackById = function(track_id) {
+// Called unconditionally (alongside the generic favourites-playlist
+// removal) whenever the user un-favourites a track - see
+// playlistManager.removeFromFavourites. A quick like-then-unlike of the
+// same track (see QUICK_TOGGLE_MS) is read as a dislike gesture.
+yandexMusic.prototype.removeFromFavourites = function(data) {
     var self = this;
 
-    self.logger.info('[yandex_music] dislikeTrackById(' + track_id + '), uid=' + self.uid);
+    var track_id = data.uri.split('/').pop().split('@')[0].split(':')[0];
 
     if (!self.uid) {
-        self.logger.info('[yandex_music] dislikeTrackById aborted: no uid');
-        return;
+        return libQ.resolve();
     }
 
-    likeApi.dislikeTrack(self.client, self.uid, track_id).then(function () {
-        self.logger.info('[yandex_music] dislikeTrack succeeded for ' + track_id);
-        self.commandRouter.pushToastMessage('success', self.getI18n('YAM_ACCOUNT'), self.getI18n('TRACK_DISLIKED'));
-    }).fail(function (err) {
-        self.logger.error('[yandex_music] Unable to dislike track: ', err);
-    });
+    var is_quick_toggle = (track_id === self.lastLikeTrack) && ((Date.now() - self.lastLikeTs) < QUICK_TOGGLE_MS);
+    self.lastLikeTrack = false;
+
     likeApi.unlikeTrack(self.client, self.uid, track_id).fail(function (err) {
         self.logger.error('[yandex_music] Unable to unlike track: ', err);
     });
+
+    if (is_quick_toggle) {
+        likeApi.dislikeTrack(self.client, self.uid, track_id).then(function () {
+            self.commandRouter.pushToastMessage('success', self.getI18n('YAM_ACCOUNT'), self.getI18n('TRACK_DISLIKED'));
+        }).fail(function (err) {
+            self.logger.error('[yandex_music] Unable to dislike track: ', err);
+        });
+    }
+
+    return libQ.resolve();
 };
 
 // Get state
