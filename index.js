@@ -33,6 +33,10 @@ function yandexMusic(context) {
 
     // We use a caching manager to speed up the presentation of root page
     self.browseCache = new NodeCache({ stdTTL: 3600, checkperiod: 120 });
+    // Caches the account's liked-track ids so we can reflect a track's real
+    // Yandex like status in Volumio's favourite heart when it starts playing,
+    // without hitting the API on every track change.
+    self.likesCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 
     self.titles = {};
     self.playlists = {};
@@ -713,6 +717,53 @@ yandexMusic.prototype.onTrackChanged = function() {
             p.onStartTrack(self.current_track.track_id);
         }
     }
+
+    self.syncFavouriteState(self.current_track);
+};
+
+// Reflects the track's real Yandex like status in Volumio's own favourites
+// list (and therefore its heart icon), so a track liked outside of Volumio
+// (in the Yandex app, or before this plugin existed) still shows as liked,
+// and one that was unliked elsewhere stops showing as liked.
+yandexMusic.prototype.syncFavouriteState = function(track) {
+    var self = this;
+
+    if (!self.uid || !track || !track.track_id) {
+        return;
+    }
+
+    var track_id = track.track_id.split('@')[0].split(':')[0];
+    var folder = self.commandRouter.playListManager.favouritesPlaylistFolder;
+
+    self.getLikedTrackIds().then(function (likedIds) {
+        var is_liked = likedIds.indexOf(track_id) !== -1;
+        if (is_liked) {
+            self.commandRouter.playListManager.commonAddToPlaylist(folder, 'favourites', 'yandex_music', track.uri).fail(function () {});
+        } else {
+            self.commandRouter.playListManager.commonRemoveFromPlaylist(folder, 'favourites', 'yandex_music', track.uri).fail(function () {});
+        }
+    }).fail(function (err) {
+        self.logger.error('[yandex_music] Unable to sync favourite state: ', err);
+    });
+};
+
+yandexMusic.prototype.getLikedTrackIds = function() {
+    var self = this;
+
+    var cached = self.likesCache.get('liked');
+    if (cached) {
+        return libQ.resolve(cached);
+    }
+
+    var defer = libQ.defer();
+    likeApi.getLikedTrackIds(self.client, self.uid).then(function (ids) {
+        self.likesCache.set('liked', ids);
+        defer.resolve(ids);
+    }).fail(function (err) {
+        defer.reject(err);
+    });
+
+    return defer.promise;
 };
 
 // Define a method to clear, add, and play an array of tracks
@@ -929,6 +980,14 @@ yandexMusic.prototype.removeFromFavourites = function(data) {
         }).fail(function (err) {
             self.logger.error('[yandex_music] Unable to dislike track: ', err);
         });
+
+        // Skip the track, but only if it's the one actually playing right
+        // now - disliking one from a browse list shouldn't touch playback.
+        var current_id = (self.current_track && self.current_track.track_id) ?
+            self.current_track.track_id.split('@')[0].split(':')[0] : false;
+        if (current_id === track_id) {
+            self.commandRouter.stateMachine.next();
+        }
     }
 
     return libQ.resolve();

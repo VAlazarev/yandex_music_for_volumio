@@ -41,9 +41,25 @@ function undislikeTrack(client, uid, track_id) {
     return postTrackIds(client, uid, 'dislikes/tracks/remove', track_id);
 }
 
+function getLikedTrackIds(client, uid) {
+    var defer = libQ.defer();
+
+    axios.get('https://api.music.yandex.net/users/' + uid + '/likes/tracks', {
+        headers: client.request.config.HEADERS
+    }).then(function (resp) {
+        var ids = resp.data.result.library.tracks.map(function (t) { return String(t.id); });
+        defer.resolve(ids);
+    }).catch(function (err) {
+        defer.reject(new Error(err));
+    });
+
+    return defer.promise;
+}
+
 module.exports = {
     likeTrack: likeTrack,
     unlikeTrack: unlikeTrack,
     dislikeTrack: dislikeTrack,
-    undislikeTrack: undislikeTrack
+    undislikeTrack: undislikeTrack,
+    getLikedTrackIds: getLikedTrackIds
 };
