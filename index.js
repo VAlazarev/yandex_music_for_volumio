@@ -845,6 +845,8 @@ yandexMusic.prototype.next = function() {
 
 // Previous
 yandexMusic.prototype.previous = function() {
+    var self = this;
+
     self.commandRouter.stateMachine.setConsumeUpdateService('mpd');
     return self.mpdPlugin.previous();
 }
