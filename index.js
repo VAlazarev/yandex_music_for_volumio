@@ -16,11 +16,6 @@ var proxy = require('./proxy.js');
 var likeApi = require('./like.js');
 var util = require('util');
 
-// If the heart is un-favourited within this window of being favourited,
-// it's read as "actually I dislike this" rather than "I changed my mind
-// about liking it" - see addToFavourites/removeFromFavourites.
-const QUICK_TOGGLE_MS = 1500;
-
 module.exports = yandexMusic;
 
 function yandexMusic(context) {
@@ -42,8 +37,6 @@ function yandexMusic(context) {
     self.playlists = {};
     self.current_track = false;
     self.positionAtPrefetch = -1;
-    self.lastLikeTs = 0;
-    self.lastLikeTrack = false;
 
     self.proxy = new proxy();
 }
@@ -76,6 +69,20 @@ yandexMusic.prototype.onStart = function() {
         self.proxy.start();
     }
 
+    // Unlike addToFavourites, playListManager.addToPlaylist has no
+    // per-plugin hook at all, so we wrap it directly: for a yandex_music
+    // track, the "+ add to playlist" button dislikes and skips it instead
+    // of actually adding it to whatever playlist the user picked.
+    self.origAddToPlaylist = self.commandRouter.playListManager.addToPlaylist.bind(self.commandRouter.playListManager);
+    self.commandRouter.playListManager.addToPlaylist = function(name, service, uri, albumTitle) {
+        if (service === 'yandex_music') {
+            var track_id = uri.split('/').pop().split('@')[0].split(':')[0];
+            self.dislikeAndSkip(track_id);
+            return libQ.resolve({success: true});
+        }
+        return self.origAddToPlaylist(name, service, uri, albumTitle);
+    };
+
     return libQ.resolve();
 };
 
@@ -85,6 +92,10 @@ yandexMusic.prototype.onStop = function() {
     self.removeFromBrowseSources();
 
     self.proxy.stop();
+
+    if (self.origAddToPlaylist) {
+        self.commandRouter.playListManager.addToPlaylist = self.origAddToPlaylist;
+    }
 
     return libQ.resolve();
 };
@@ -736,6 +747,15 @@ yandexMusic.prototype.syncFavouriteState = function(track) {
     var folder = self.commandRouter.playListManager.favouritesPlaylistFolder;
 
     self.getLikedTrackIds().then(function (likedIds) {
+        // The user may already have skipped past this track by the time
+        // the like-ids fetch resolves (a cold cache, or fast radio
+        // skipping, can take a couple seconds) - applying a stale result
+        // here would push a favourite state for a track that isn't the
+        // one currently on screen anymore, painting the wrong heart icon.
+        if (!self.current_track || self.current_track.uri !== track.uri) {
+            return;
+        }
+
         var is_liked = likedIds.indexOf(track_id) !== -1;
 
         // commonAddToPlaylist has no duplicate check (it would pile up
@@ -744,6 +764,10 @@ yandexMusic.prototype.syncFavouriteState = function(track) {
         // there was nothing to remove - so only call either when the local
         // favourites list is actually out of sync with the real like status.
         fs.readJson(folder + 'favourites', function (err, data) {
+            if (!self.current_track || self.current_track.uri !== track.uri) {
+                return;
+            }
+
             var already_there = !err && Array.isArray(data) && data.some(function (x) {
                 return x.service === 'yandex_music' && x.uri === track.uri;
             });
@@ -948,9 +972,6 @@ yandexMusic.prototype.addToFavourites = function(data) {
         return libQ.reject(new Error('no_uid'));
     }
 
-    self.lastLikeTs = Date.now();
-    self.lastLikeTrack = track_id;
-
     // Fired in the background, not chained: the local favourites write
     // below must happen immediately (like Volumio's own removeFromFavourites
     // does), otherwise a quick like-then-unlike race can leave the heart
@@ -968,8 +989,9 @@ yandexMusic.prototype.addToFavourites = function(data) {
 
 // Called unconditionally (alongside the generic favourites-playlist
 // removal) whenever the user un-favourites a track - see
-// playlistManager.removeFromFavourites. A quick like-then-unlike of the
-// same track (see QUICK_TOGGLE_MS) is read as a dislike gesture.
+// playlistManager.removeFromFavourites. Un-liking a track is read as a
+// dislike gesture outright: there's no real "neutral, used to like it,
+// changed my mind" case worth distinguishing here.
 yandexMusic.prototype.removeFromFavourites = function(data) {
     var self = this;
 
@@ -979,30 +1001,40 @@ yandexMusic.prototype.removeFromFavourites = function(data) {
         return libQ.resolve();
     }
 
-    var is_quick_toggle = (track_id === self.lastLikeTrack) && ((Date.now() - self.lastLikeTs) < QUICK_TOGGLE_MS);
-    self.lastLikeTrack = false;
-
     likeApi.unlikeTrack(self.client, self.uid, track_id).fail(function (err) {
         self.logger.error('[yandex_music] Unable to unlike track: ', err);
     });
 
-    if (is_quick_toggle) {
-        likeApi.dislikeTrack(self.client, self.uid, track_id).then(function () {
-            self.commandRouter.pushToastMessage('success', self.getI18n('YAM_ACCOUNT'), self.getI18n('TRACK_DISLIKED'));
-        }).fail(function (err) {
-            self.logger.error('[yandex_music] Unable to dislike track: ', err);
-        });
-
-        // Skip the track, but only if it's the one actually playing right
-        // now - disliking one from a browse list shouldn't touch playback.
-        var current_id = (self.current_track && self.current_track.track_id) ?
-            self.current_track.track_id.split('@')[0].split(':')[0] : false;
-        if (current_id === track_id) {
-            self.commandRouter.stateMachine.next();
-        }
-    }
+    self.dislikeAndSkip(track_id);
 
     return libQ.resolve();
+};
+
+// Dislikes a track on Yandex and, if it's the one actually playing right
+// now, skips it. Shared by removeFromFavourites (un-liking a track) and
+// the addToPlaylist hijack (see onStart) that repurposes the "+" button
+// for yandex_music tracks.
+yandexMusic.prototype.dislikeAndSkip = function(track_id) {
+    var self = this;
+
+    if (!self.uid) {
+        return;
+    }
+
+    likeApi.dislikeTrack(self.client, self.uid, track_id).then(function () {
+        self.commandRouter.pushToastMessage('success', self.getI18n('YAM_ACCOUNT'), self.getI18n('TRACK_DISLIKED'));
+    }).fail(function (err) {
+        self.logger.error('[yandex_music] Unable to dislike track: ', err);
+    });
+
+    // Only skip if it's the track actually playing right now - disliking
+    // one from a browse list or a "+" tap on some other item shouldn't
+    // touch playback.
+    var current_id = (self.current_track && self.current_track.track_id) ?
+        self.current_track.track_id.split('@')[0].split(':')[0] : false;
+    if (current_id === track_id) {
+        self.commandRouter.stateMachine.next();
+    }
 };
 
 // Get state
