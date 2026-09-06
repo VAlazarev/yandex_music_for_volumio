@@ -737,11 +737,23 @@ yandexMusic.prototype.syncFavouriteState = function(track) {
 
     self.getLikedTrackIds().then(function (likedIds) {
         var is_liked = likedIds.indexOf(track_id) !== -1;
-        if (is_liked) {
-            self.commandRouter.playListManager.commonAddToPlaylist(folder, 'favourites', 'yandex_music', track.uri).fail(function () {});
-        } else {
-            self.commandRouter.playListManager.commonRemoveFromPlaylist(folder, 'favourites', 'yandex_music', track.uri).fail(function () {});
-        }
+
+        // commonAddToPlaylist has no duplicate check (it would pile up
+        // repeat entries every time a liked track plays) and
+        // commonRemoveFromPlaylist always pops a "Removed" toast even when
+        // there was nothing to remove - so only call either when the local
+        // favourites list is actually out of sync with the real like status.
+        fs.readJson(folder + 'favourites', function (err, data) {
+            var already_there = !err && Array.isArray(data) && data.some(function (x) {
+                return x.service === 'yandex_music' && x.uri === track.uri;
+            });
+
+            if (is_liked && !already_there) {
+                self.commandRouter.playListManager.commonAddToPlaylist(folder, 'favourites', 'yandex_music', track.uri).fail(function () {});
+            } else if (!is_liked && already_there) {
+                self.commandRouter.playListManager.commonRemoveFromPlaylist(folder, 'favourites', 'yandex_music', track.uri).fail(function () {});
+            }
+        });
     }).fail(function (err) {
         self.logger.error('[yandex_music] Unable to sync favourite state: ', err);
     });
