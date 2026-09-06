@@ -13,7 +13,12 @@ var getToken = require('./token.js');
 var getTrackUrl = require('./track.js');
 var playlist = require('./playlist.js');
 var proxy = require('./proxy.js');
+var likeApi = require('./like.js');
 var util = require('util');
+
+// A double-press of next/previous within this window is treated as a
+// like/dislike gesture for the track that was playing before the press.
+const DOUBLE_PRESS_MS = 700;
 
 module.exports = yandexMusic;
 
@@ -32,6 +37,10 @@ function yandexMusic(context) {
     self.playlists = {};
     self.current_track = false;
     self.positionAtPrefetch = -1;
+    self.lastNextTs = 0;
+    self.lastPrevTs = 0;
+    self.lastNextTrack = false;
+    self.lastPrevTrack = false;
 
     self.proxy = new proxy();
 }
@@ -839,6 +848,8 @@ yandexMusic.prototype.resume = function () {
 yandexMusic.prototype.next = function() {
     var self = this;
 
+    self.checkDoublePress('next');
+
     self.commandRouter.stateMachine.setConsumeUpdateService('mpd');
     return self.mpdPlugin.next();
 }
@@ -847,9 +858,69 @@ yandexMusic.prototype.next = function() {
 yandexMusic.prototype.previous = function() {
     var self = this;
 
+    self.checkDoublePress('previous');
+
     self.commandRouter.stateMachine.setConsumeUpdateService('mpd');
     return self.mpdPlugin.previous();
 }
+
+// A double-press of next (or previous) is used as a like (or dislike)
+// gesture. The track id is captured on the first press rather than
+// re-read on the second, so a slow track change in between can't make us
+// like/dislike the wrong track.
+yandexMusic.prototype.checkDoublePress = function(direction) {
+    var self = this;
+
+    var ts_key = (direction == 'next') ? 'lastNextTs' : 'lastPrevTs';
+    var track_key = (direction == 'next') ? 'lastNextTrack' : 'lastPrevTrack';
+    var now = Date.now();
+    var is_double = (now - self[ts_key]) < DOUBLE_PRESS_MS;
+
+    if (is_double) {
+        self[ts_key] = 0;
+        if (self[track_key]) {
+            if (direction == 'next') {
+                self.likeTrackById(self[track_key]);
+            } else {
+                self.dislikeTrackById(self[track_key]);
+            }
+        }
+    } else {
+        self[ts_key] = now;
+        self[track_key] = (self.current_track && self.current_track.track_id) ?
+            self.current_track.track_id.split('@')[0] : false;
+    }
+};
+
+yandexMusic.prototype.likeTrackById = function(track_id) {
+    var self = this;
+
+    if (!self.uid) {
+        return;
+    }
+
+    likeApi.likeTrack(self.client, self.uid, track_id).then(function () {
+        self.commandRouter.pushToastMessage('success', self.getI18n('YAM_ACCOUNT'), self.getI18n('TRACK_LIKED'));
+    }).fail(function (err) {
+        self.logger.error('Unable to like track: ', err);
+    });
+    likeApi.undislikeTrack(self.client, self.uid, track_id).fail(function (err) {});
+};
+
+yandexMusic.prototype.dislikeTrackById = function(track_id) {
+    var self = this;
+
+    if (!self.uid) {
+        return;
+    }
+
+    likeApi.dislikeTrack(self.client, self.uid, track_id).then(function () {
+        self.commandRouter.pushToastMessage('success', self.getI18n('YAM_ACCOUNT'), self.getI18n('TRACK_DISLIKED'));
+    }).fail(function (err) {
+        self.logger.error('Unable to dislike track: ', err);
+    });
+    likeApi.unlikeTrack(self.client, self.uid, track_id).fail(function (err) {});
+};
 
 // Get state
 yandexMusic.prototype.getState = function() {

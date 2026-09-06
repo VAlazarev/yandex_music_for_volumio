@@ -39,5 +39,7 @@
   "SEARCH_BEST_SECTION":"Лучшее совпадение",
   "SEARCH_SONGS_SECTION":"Треки",
   "SEARCH_ALBUMS_SECTION":"Альбомы",
-  "SEARCH_ARTISTS_SECTION":"Исполнители"
+  "SEARCH_ARTISTS_SECTION":"Исполнители",
+  "TRACK_LIKED":"Трек добавлен в \"Мне нравится\"",
+  "TRACK_DISLIKED":"Трек отмечен как нерекомендуемый"
 }

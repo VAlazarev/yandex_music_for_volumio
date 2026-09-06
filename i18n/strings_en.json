@@ -39,5 +39,7 @@
   "SEARCH_BEST_SECTION":"Best match",
   "SEARCH_SONGS_SECTION":"Songs",
   "SEARCH_ALBUMS_SECTION":"Albums",
-  "SEARCH_ARTISTS_SECTION":"Artists"
+  "SEARCH_ARTISTS_SECTION":"Artists",
+  "TRACK_LIKED":"Track added to Likes",
+  "TRACK_DISLIKED":"Track marked as not recommended"
 }
