@@ -874,16 +874,23 @@ yandexMusic.prototype.checkDoublePress = function(direction) {
     var ts_key = (direction == 'next') ? 'lastNextTs' : 'lastPrevTs';
     var track_key = (direction == 'next') ? 'lastNextTrack' : 'lastPrevTrack';
     var now = Date.now();
-    var is_double = (now - self[ts_key]) < DOUBLE_PRESS_MS;
+    var delta = now - self[ts_key];
+    var is_double = delta < DOUBLE_PRESS_MS;
+
+    self.logger.info('[yandex_music] ' + direction + '() pressed, delta=' + delta + 'ms, is_double=' + is_double +
+        ', current_track=' + (self.current_track ? self.current_track.track_id : 'none'));
 
     if (is_double) {
         self[ts_key] = 0;
         if (self[track_key]) {
+            self.logger.info('[yandex_music] double-press detected, track_id=' + self[track_key]);
             if (direction == 'next') {
                 self.likeTrackById(self[track_key]);
             } else {
                 self.dislikeTrackById(self[track_key]);
             }
+        } else {
+            self.logger.info('[yandex_music] double-press detected but no captured track_id');
         }
     } else {
         self[ts_key] = now;
@@ -895,31 +902,43 @@ yandexMusic.prototype.checkDoublePress = function(direction) {
 yandexMusic.prototype.likeTrackById = function(track_id) {
     var self = this;
 
+    self.logger.info('[yandex_music] likeTrackById(' + track_id + '), uid=' + self.uid);
+
     if (!self.uid) {
+        self.logger.info('[yandex_music] likeTrackById aborted: no uid');
         return;
     }
 
     likeApi.likeTrack(self.client, self.uid, track_id).then(function () {
+        self.logger.info('[yandex_music] likeTrack succeeded for ' + track_id);
         self.commandRouter.pushToastMessage('success', self.getI18n('YAM_ACCOUNT'), self.getI18n('TRACK_LIKED'));
     }).fail(function (err) {
-        self.logger.error('Unable to like track: ', err);
+        self.logger.error('[yandex_music] Unable to like track: ', err);
     });
-    likeApi.undislikeTrack(self.client, self.uid, track_id).fail(function (err) {});
+    likeApi.undislikeTrack(self.client, self.uid, track_id).fail(function (err) {
+        self.logger.error('[yandex_music] Unable to undislike track: ', err);
+    });
 };
 
 yandexMusic.prototype.dislikeTrackById = function(track_id) {
     var self = this;
 
+    self.logger.info('[yandex_music] dislikeTrackById(' + track_id + '), uid=' + self.uid);
+
     if (!self.uid) {
+        self.logger.info('[yandex_music] dislikeTrackById aborted: no uid');
         return;
     }
 
     likeApi.dislikeTrack(self.client, self.uid, track_id).then(function () {
+        self.logger.info('[yandex_music] dislikeTrack succeeded for ' + track_id);
         self.commandRouter.pushToastMessage('success', self.getI18n('YAM_ACCOUNT'), self.getI18n('TRACK_DISLIKED'));
     }).fail(function (err) {
-        self.logger.error('Unable to dislike track: ', err);
+        self.logger.error('[yandex_music] Unable to dislike track: ', err);
     });
-    likeApi.unlikeTrack(self.client, self.uid, track_id).fail(function (err) {});
+    likeApi.unlikeTrack(self.client, self.uid, track_id).fail(function (err) {
+        self.logger.error('[yandex_music] Unable to unlike track: ', err);
+    });
 };
 
 // Get state
