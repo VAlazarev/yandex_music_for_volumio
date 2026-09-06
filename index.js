@@ -888,7 +888,7 @@ yandexMusic.prototype.checkDoublePress = function(direction) {
     } else {
         self[ts_key] = now;
         self[track_key] = (self.current_track && self.current_track.track_id) ?
-            self.current_track.track_id.split('@')[0] : false;
+            self.current_track.track_id.split('@')[0].split(':')[0] : false;
     }
 };
 
