@@ -754,7 +754,17 @@ yandexMusic.prototype.clearAddPlayTrack = function(track) {
             }
         })
         .then(function () {
-            self.commandRouter.stateMachine.setConsumeUpdateService('mpd');
+            // The `true` (ignoremeta) tells Volumio to keep reporting
+            // this service/uri as 'yandex_music' (from the queue's track
+            // block) instead of overwriting them with what MPD itself
+            // reports ('mpd' / the resolved stream URL). Without it,
+            // Volumio's next()/previous() and the native favourite/heart
+            // button on the Now Playing screen never reach this plugin at
+            // all - they route to the plain 'mpd' service instead. The
+            // trade-off is that live samplerate/bitdepth (e.g. "44.1kHz/
+            // 16bit") no longer show during playback, since those come
+            // from the track block rather than MPD's live-detected format.
+            self.commandRouter.stateMachine.setConsumeUpdateService('mpd', true);
             return self.mpdPlugin.sendMpdCommand('play', []);
         })
         .then(function () {
@@ -806,7 +816,7 @@ yandexMusic.prototype.onPushState = function (state) {
     // and prefetched track does not display metadata
     if (self.positionAtPrefetch >= 0) {
         if (state && state.service == 'yandex_music') {
-            self.commandRouter.stateMachine.setConsumeUpdateService('mpd');
+            self.commandRouter.stateMachine.setConsumeUpdateService('mpd', true);
             self.positionAtPrefetch = -1;
         }
     }
@@ -823,7 +833,7 @@ yandexMusic.prototype.seek = function (timepos) {
 yandexMusic.prototype.stop = function() {
     var self = this;
 
-    self.commandRouter.stateMachine.setConsumeUpdateService('mpd');
+    self.commandRouter.stateMachine.setConsumeUpdateService('mpd', true);
     return self.mpdPlugin.stop();
 };
 
@@ -831,7 +841,7 @@ yandexMusic.prototype.stop = function() {
 yandexMusic.prototype.pause = function() {
     var self = this;
 
-    self.commandRouter.stateMachine.setConsumeUpdateService('mpd');
+    self.commandRouter.stateMachine.setConsumeUpdateService('mpd', true);
     return self.mpdPlugin.pause();
 };
 
@@ -839,7 +849,7 @@ yandexMusic.prototype.pause = function() {
 yandexMusic.prototype.resume = function () {
     var self = this;
 
-    self.commandRouter.stateMachine.setConsumeUpdateService('mpd');
+    self.commandRouter.stateMachine.setConsumeUpdateService('mpd', true);
     return self.mpdPlugin.resume();
 };
 
@@ -847,7 +857,7 @@ yandexMusic.prototype.resume = function () {
 yandexMusic.prototype.next = function() {
     var self = this;
 
-    self.commandRouter.stateMachine.setConsumeUpdateService('mpd');
+    self.commandRouter.stateMachine.setConsumeUpdateService('mpd', true);
     return self.mpdPlugin.next();
 }
 
@@ -855,7 +865,7 @@ yandexMusic.prototype.next = function() {
 yandexMusic.prototype.previous = function() {
     var self = this;
 
-    self.commandRouter.stateMachine.setConsumeUpdateService('mpd');
+    self.commandRouter.stateMachine.setConsumeUpdateService('mpd', true);
     return self.mpdPlugin.previous();
 }
 
