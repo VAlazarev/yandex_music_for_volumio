@@ -16,6 +16,20 @@ var proxy = require('./proxy.js');
 var likeApi = require('./like.js');
 var util = require('util');
 
+// Sections of the "all stations" screen, in display order. The rotor
+// catalogue also returns micro-genre (~370 entries, far too many to browse)
+// and mix-by-* variants that just duplicate the plain genre/mood/activity
+// stations, so those types are deliberately left out.
+const STATION_SECTIONS = [
+    { type: 'personal', i18n: 'STATIONS_PERSONAL' },
+    { type: 'genre', i18n: 'STATIONS_GENRE' },
+    { type: 'mood', i18n: 'STATIONS_MOOD' },
+    { type: 'activity', i18n: 'STATIONS_ACTIVITY' },
+    { type: 'epoch', i18n: 'STATIONS_EPOCH' },
+    { type: 'local-language', i18n: 'STATIONS_LANGUAGE' },
+    { type: 'editorial', i18n: 'STATIONS_EDITORIAL' }
+];
+
 module.exports = yandexMusic;
 
 function yandexMusic(context) {
@@ -321,6 +335,8 @@ yandexMusic.prototype.handleBrowseUri = function (curUri) {
             response = self.browseRoot();
         } else if (curUri == 'yandex_music/myplaylists') {
             response = self.browseMyPlaylists();
+        } else if (curUri == 'yandex_music/stations') {
+            response = self.browseStations();
         } else if (curUri.startsWith('yandex_music/radio/')) {
             response = self.browseRadio(uriParts.pop());
         } else if (curUri.startsWith('yandex_music/playlist/')) {
@@ -411,6 +427,15 @@ yandexMusic.prototype.listRoot = function () {
                     "title": self.getI18n('MY_WAVE'),
                     "items": [
                         {
+                            id: self.uid + ':3',
+                            service: 'yandex_music',
+                            type: 'playlist',
+                            name: self.getI18n('MY_LIKES'),
+                            title: self.getI18n('MY_LIKES'),
+                            albumart: 'https://avatars.yandex.net/get-music-user-playlist/11418140/favorit-playlist-cover.bb48fdb9b9f4/200x200',
+                            uri: 'yandex_music/playlist/' + self.uid + ':3'
+                        },
+                        {
                             service: 'yandex_music',
                             type: 'playlist',
                             title: self.getI18n('MY_PLAYLISTS'),
@@ -418,6 +443,15 @@ yandexMusic.prototype.listRoot = function () {
                             album: '',
                             albumart: '/albumart?sourceicon=music_service/yandex_music/icons/playlist.png',
                             uri: 'yandex_music/myplaylists'
+                        },
+                        {
+                            service: 'yandex_music',
+                            type: 'playlist',
+                            title: self.getI18n('ALL_STATIONS'),
+                            artist: '',
+                            album: '',
+                            albumart: '/albumart?sourceicon=music_service/yandex_music/icons/playlist.png',
+                            uri: 'yandex_music/stations'
                         },
                     ]
                 },
@@ -460,6 +494,9 @@ yandexMusic.prototype.listRoot = function () {
             ]
         }
     };
+
+    // Likes playlist: kind=3
+    self.titles[self.uid + ':3'] = self.getI18n('MY_LIKES');
 
     self.client.landing.getLandingBlocks('personal-playlists,new-releases,new-playlists,play-contexts').then(function (resp) {
         var p = new playlist(self.client, self.uid);
@@ -506,12 +543,70 @@ yandexMusic.prototype.listRoot = function () {
                 self.titles[blocks[i].id] = blocks[i].title;
                 response.navigation.lists[0].items.push(blocks[i]);
             }
-            defer.resolve(response);
         }).catch(function (err) {
+        }).then(function () {
+            // Chart. It is served as an ordinary playlist, so the existing
+            // playlist browsing handles it once we have its uid:kind card.
+            return self.client.landing.getChart('russia');
+        }).then(function (resp) {
+            var chart = p.landingToPlaylist(resp.result.chart);
+            chart.title = self.getI18n('MY_CHART');
+            chart.name = chart.title;
+            self.titles[chart.id] = chart.title;
+            // Kept next to the other shortcuts rather than appended after
+            // the stations, which land here asynchronously.
+            response.navigation.lists[0].items.splice(3, 0, chart);
+        }).catch(function (err) {
+        }).then(function () {
             defer.resolve(response);
         });
     }).catch(function (err) {
         defer.reject(new Error());
+    });
+
+    return defer.promise;
+};
+
+// The rotor catalogue holds ~700 stations, while the root menu only shows
+// the handful the dashboard endpoint personalises. This lists the rest,
+// grouped into the sections declared in STATION_SECTIONS.
+yandexMusic.prototype.browseStations = function () {
+    var self = this;
+    var defer = libQ.defer();
+
+    var cached = self.browseCache.get('stations');
+    if (cached) {
+        return libQ.resolve(cached);
+    }
+
+    self.client.rotor.getStationsList(self.commandRouter.sharedVars.get('language_code')).then(function (resp) {
+        var p = new playlist(self.client, self.uid);
+
+        var lists = STATION_SECTIONS.map(function (section) {
+            var items = resp.result.filter(function (x) {
+                return x.station && x.station.id && x.station.id.type == section.type;
+            }).map(function (x) {
+                var station = p.stationToRadio(x.station);
+                self.titles[station.id] = station.title;
+                return station;
+            });
+
+            return {
+                "availableListViews": ["grid", "list"],
+                "type": "title",
+                "title": self.getI18n(section.i18n),
+                "items": items
+            };
+        }).filter(function (list) {
+            return list.items.length > 0;
+        });
+
+        var response = { navigation: { lists: lists } };
+        self.browseCache.set('stations', response);
+        defer.resolve(response);
+    }).catch(function (err) {
+        self.logger.error('[yandex_music] Unable to list stations: ', err);
+        defer.reject(new Error(err));
     });
 
     return defer.promise;
