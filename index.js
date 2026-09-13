@@ -853,6 +853,16 @@ yandexMusic.prototype.syncFavouriteState = function(track) {
 
         var is_liked = likedIds.indexOf(track_id) !== -1;
 
+        // Volumio paints the heart icon purely from 'urifavourites' events,
+        // and the core emits none when the track changes - so the icon just
+        // keeps whatever the previous track left it at, showing a green
+        // heart on tracks that were never liked. Announce it ourselves.
+        self.commandRouter.emitFavourites({
+            service: 'yandex_music',
+            uri: track.uri,
+            favourite: is_liked
+        });
+
         // commonAddToPlaylist has no duplicate check (it would pile up
         // repeat entries every time a liked track plays) and
         // commonRemoveFromPlaylist always pops a "Removed" toast even when
