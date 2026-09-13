@@ -827,9 +827,7 @@ yandexMusic.prototype.onTrackChanged = function() {
         }
     }
 
-    if (self.current_track) {
-        self.announceFavouriteState(self.current_track.uri);
-    }
+    self.syncFavouriteState(self.current_track);
 };
 
 // Tells the UI whether the starting track is liked on Yandex. Volumio
@@ -841,14 +839,14 @@ yandexMusic.prototype.onTrackChanged = function() {
 // the like lives on Yandex, and keeping a second copy locally only made
 // the two drift apart (and popped a "Removed" toast mid-playback each
 // time they did).
-yandexMusic.prototype.announceFavouriteState = function(uri) {
+yandexMusic.prototype.syncFavouriteState = function(track) {
     var self = this;
 
-    if (!self.uid || !uri) {
+    if (!self.uid || !track || !track.track_id) {
         return;
     }
 
-    var track_id = uri.split('/').pop().split('@')[0].split(':')[0];
+    var track_id = track.track_id.split('@')[0].split(':')[0];
 
     self.getLikedTrackIds().then(function (likedIds) {
         // The user may already have skipped past this track by the time
@@ -856,17 +854,17 @@ yandexMusic.prototype.announceFavouriteState = function(uri) {
         // skipping, can take a couple seconds) - applying a stale result
         // here would paint the heart for a track that is no longer the
         // one on screen.
-        if (!self.current_track || self.current_track.uri !== uri) {
+        if (!self.current_track || self.current_track.uri !== track.uri) {
             return;
         }
 
         self.commandRouter.emitFavourites({
             service: 'yandex_music',
-            uri: uri,
+            uri: track.uri,
             favourite: likedIds.indexOf(track_id) !== -1
         });
     }).fail(function (err) {
-        self.logger.error('[yandex_music] Unable to announce favourite state: ', err);
+        self.logger.error('[yandex_music] Unable to sync favourite state: ', err);
     });
 };
 
@@ -891,8 +889,8 @@ yandexMusic.prototype.getLikedTrackIds = function() {
 
 // Keeps the cached like list in step with likes we make ourselves.
 // Without this, a track liked here still counts as un-liked until the
-// cache expires, so a track liked here would keep reporting itself as
-// un-liked - and the heart would go grey again the moment it played.
+// cache expires, and syncFavouriteState then "corrects" it by dropping
+// the track from the favourites list the moment it plays again.
 yandexMusic.prototype.updateLikedCache = function(track_id, is_liked) {
     var self = this;
 
@@ -1014,17 +1012,6 @@ yandexMusic.prototype.onPushState = function (state) {
             self.commandRouter.stateMachine.setConsumeUpdateService('mpd', true);
             self.positionAtPrefetch = -1;
         }
-    }
-
-    // Announce the heart state again here, once the new track has actually
-    // been pushed out to the clients. onTrackChanged fires as soon as the
-    // track is loaded, which can be before the UI knows the track changed
-    // at all - and a favourite event for a track the UI is not showing yet
-    // is simply dropped, leaving the previous track's heart on screen.
-    if (state && state.service == 'yandex_music' && state.uri &&
-        state.uri != self.announcedFavouriteUri) {
-        self.announcedFavouriteUri = state.uri;
-        self.announceFavouriteState(state.uri);
     }
 }
 
