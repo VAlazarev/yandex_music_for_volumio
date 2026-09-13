@@ -44,8 +44,11 @@ function yandexMusic(context) {
     self.browseCache = new NodeCache({ stdTTL: 3600, checkperiod: 120 });
     // Caches the account's liked-track ids so we can reflect a track's real
     // Yandex like status in Volumio's favourite heart when it starts playing,
-    // without hitting the API on every track change.
-    self.likesCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+    // without hitting the API on every track change. Likes made here update
+    // the cache in place (see updateLikedCache); ones made in the Yandex app
+    // can only be picked up when it expires, so keep the window short - it is
+    // refetched at most once a minute, and only while tracks are changing.
+    self.likesCache = new NodeCache({ stdTTL: 60, checkperiod: 30 });
 
     self.titles = {};
     self.playlists = {};
