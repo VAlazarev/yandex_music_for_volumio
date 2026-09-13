@@ -830,10 +830,15 @@ yandexMusic.prototype.onTrackChanged = function() {
     self.syncFavouriteState(self.current_track);
 };
 
-// Reflects the track's real Yandex like status in Volumio's own favourites
-// list (and therefore its heart icon), so a track liked outside of Volumio
-// (in the Yandex app, or before this plugin existed) still shows as liked,
-// and one that was unliked elsewhere stops showing as liked.
+// Tells the UI whether the starting track is liked on Yandex. Volumio
+// paints the heart purely from 'urifavourites' events and emits none of
+// its own on a track change, so without this the icon simply keeps
+// whatever the previous track left it at.
+//
+// Note this deliberately does not touch Volumio's own favourites list:
+// the like lives on Yandex, and keeping a second copy locally only made
+// the two drift apart (and popped a "Removed" toast mid-playback each
+// time they did).
 yandexMusic.prototype.syncFavouriteState = function(track) {
     var self = this;
 
@@ -842,49 +847,21 @@ yandexMusic.prototype.syncFavouriteState = function(track) {
     }
 
     var track_id = track.track_id.split('@')[0].split(':')[0];
-    var folder = self.commandRouter.playListManager.favouritesPlaylistFolder;
 
     self.getLikedTrackIds().then(function (likedIds) {
         // The user may already have skipped past this track by the time
         // the like-ids fetch resolves (a cold cache, or fast radio
         // skipping, can take a couple seconds) - applying a stale result
-        // here would push a favourite state for a track that isn't the
-        // one currently on screen anymore, painting the wrong heart icon.
+        // here would paint the heart for a track that is no longer the
+        // one on screen.
         if (!self.current_track || self.current_track.uri !== track.uri) {
             return;
         }
 
-        var is_liked = likedIds.indexOf(track_id) !== -1;
-
-        // Volumio paints the heart icon purely from 'urifavourites' events,
-        // and the core emits none when the track changes - so the icon just
-        // keeps whatever the previous track left it at, showing a green
-        // heart on tracks that were never liked. Announce it ourselves.
         self.commandRouter.emitFavourites({
             service: 'yandex_music',
             uri: track.uri,
-            favourite: is_liked
-        });
-
-        // commonAddToPlaylist has no duplicate check (it would pile up
-        // repeat entries every time a liked track plays) and
-        // commonRemoveFromPlaylist always pops a "Removed" toast even when
-        // there was nothing to remove - so only call either when the local
-        // favourites list is actually out of sync with the real like status.
-        fs.readJson(folder + 'favourites', function (err, data) {
-            if (!self.current_track || self.current_track.uri !== track.uri) {
-                return;
-            }
-
-            var already_there = !err && Array.isArray(data) && data.some(function (x) {
-                return x.service === 'yandex_music' && x.uri === track.uri;
-            });
-
-            if (is_liked && !already_there) {
-                self.commandRouter.playListManager.commonAddToPlaylist(folder, 'favourites', 'yandex_music', track.uri).fail(function () {});
-            } else if (!is_liked && already_there) {
-                self.commandRouter.playListManager.commonRemoveFromPlaylist(folder, 'favourites', 'yandex_music', track.uri).fail(function () {});
-            }
+            favourite: likedIds.indexOf(track_id) !== -1
         });
     }).fail(function (err) {
         self.logger.error('[yandex_music] Unable to sync favourite state: ', err);
@@ -1089,8 +1066,10 @@ yandexMusic.prototype.previous = function() {
 // favourite/heart button, instead of (not in addition to) the generic
 // local-favourites-playlist handling - see playlistManager.addToFavourites,
 // which only falls back to the generic path when this method is absent.
-// We also mirror the add into Volumio's own favourites list ourselves so
-// the heart icon still reflects the liked state in the UI.
+//
+// The like is recorded on Yandex only. Writing a copy into Volumio's own
+// favourites list as well just gave two sources of truth that drifted
+// apart whenever a like changed in the Yandex app or a request failed.
 yandexMusic.prototype.addToFavourites = function(data) {
     var self = this;
 
@@ -1101,11 +1080,12 @@ yandexMusic.prototype.addToFavourites = function(data) {
         return libQ.reject(new Error('no_uid'));
     }
 
-    // Fired in the background, not chained: the local favourites write
-    // below must happen immediately (like Volumio's own removeFromFavourites
-    // does), otherwise a quick like-then-unlike race can leave the heart
-    // icon showing "liked" after the network round trip finally lands.
     self.updateLikedCache(track_id, true);
+    self.commandRouter.emitFavourites({
+        service: 'yandex_music',
+        uri: data.uri,
+        favourite: true
+    });
 
     likeApi.likeTrack(self.client, self.uid, track_id).fail(function (err) {
         self.logger.error('[yandex_music] Unable to like track: ', err);
@@ -1114,8 +1094,7 @@ yandexMusic.prototype.addToFavourites = function(data) {
         self.logger.error('[yandex_music] Unable to undislike track: ', err);
     });
 
-    return self.commandRouter.playListManager.commonAddToPlaylist(
-        self.commandRouter.playListManager.favouritesPlaylistFolder, 'favourites', data.service, data.uri);
+    return libQ.resolve({ success: true });
 };
 
 // Called unconditionally (alongside the generic favourites-playlist
