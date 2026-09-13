@@ -907,6 +907,27 @@ yandexMusic.prototype.getLikedTrackIds = function() {
     return defer.promise;
 };
 
+// Keeps the cached like list in step with likes we make ourselves.
+// Without this, a track liked here still counts as un-liked until the
+// cache expires, and syncFavouriteState then "corrects" it by dropping
+// the track from the favourites list the moment it plays again.
+yandexMusic.prototype.updateLikedCache = function(track_id, is_liked) {
+    var self = this;
+
+    var cached = self.likesCache.get('liked');
+    if (!cached) {
+        return;
+    }
+
+    var at = cached.indexOf(track_id);
+    if (is_liked && at === -1) {
+        cached.push(track_id);
+    } else if (!is_liked && at !== -1) {
+        cached.splice(at, 1);
+    }
+    self.likesCache.set('liked', cached);
+};
+
 // Define a method to clear, add, and play an array of tracks
 yandexMusic.prototype.clearAddPlayTrack = function(track) {
     var self = this;
@@ -1081,6 +1102,8 @@ yandexMusic.prototype.addToFavourites = function(data) {
     // below must happen immediately (like Volumio's own removeFromFavourites
     // does), otherwise a quick like-then-unlike race can leave the heart
     // icon showing "liked" after the network round trip finally lands.
+    self.updateLikedCache(track_id, true);
+
     likeApi.likeTrack(self.client, self.uid, track_id).fail(function (err) {
         self.logger.error('[yandex_music] Unable to like track: ', err);
     });
@@ -1105,6 +1128,8 @@ yandexMusic.prototype.removeFromFavourites = function(data) {
     if (!self.uid) {
         return libQ.resolve();
     }
+
+    self.updateLikedCache(track_id, false);
 
     likeApi.unlikeTrack(self.client, self.uid, track_id).fail(function (err) {
         self.logger.error('[yandex_music] Unable to unlike track: ', err);
