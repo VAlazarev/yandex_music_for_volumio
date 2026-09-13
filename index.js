@@ -827,44 +827,49 @@ yandexMusic.prototype.onTrackChanged = function() {
         }
     }
 
-    self.syncFavouriteState(self.current_track);
 };
 
-// Tells the UI whether the starting track is liked on Yandex. Volumio
-// paints the heart purely from 'urifavourites' events and emits none of
-// its own on a track change, so without this the icon simply keeps
-// whatever the previous track left it at.
+// Tells the UI whether the current track is liked on Yandex. Volumio paints
+// the heart purely from 'urifavourites' events and emits none of its own on
+// a track change, so without this the icon just keeps whatever the previous
+// track left it at - a green heart on tracks that were never liked.
 //
-// Note this deliberately does not touch Volumio's own favourites list:
-// the like lives on Yandex, and keeping a second copy locally only made
-// the two drift apart (and popped a "Removed" toast mid-playback each
-// time they did).
-yandexMusic.prototype.syncFavouriteState = function(track) {
+// Driven from onPushState rather than from the track-loaded hook: that hook
+// can fire before Volumio has told the clients the track changed, and an
+// event for a track the UI is not showing yet is dropped on the floor.
+// announcedFavouriteUri is only set once an event has actually gone out, so
+// a skipped announcement is retried on the next push instead of being lost.
+//
+// Note this deliberately does not touch Volumio's own favourites list: the
+// like lives on Yandex, and keeping a second copy locally only made the two
+// drift apart (and popped a "Removed" toast mid-playback each time they did).
+yandexMusic.prototype.announceFavouriteState = function(uri) {
     var self = this;
 
-    if (!self.uid || !track || !track.track_id) {
+    if (!self.uid || !uri) {
         return;
     }
 
-    var track_id = track.track_id.split('@')[0].split(':')[0];
+    var track_id = uri.split('/').pop().split('@')[0].split(':')[0];
 
     self.getLikedTrackIds().then(function (likedIds) {
-        // The user may already have skipped past this track by the time
-        // the like-ids fetch resolves (a cold cache, or fast radio
-        // skipping, can take a couple seconds) - applying a stale result
-        // here would paint the heart for a track that is no longer the
-        // one on screen.
-        if (!self.current_track || self.current_track.uri !== track.uri) {
+        // Playback may have moved on while the like ids were being fetched
+        // (a cold cache, or fast skipping, can take a couple of seconds).
+        // Announcing now would paint the heart for a track that is no longer
+        // the one on screen - and leaving announcedFavouriteUri untouched
+        // means the track that *is* on screen still gets its turn.
+        if (self.lastPushedUri && self.lastPushedUri !== uri) {
             return;
         }
 
+        self.announcedFavouriteUri = uri;
         self.commandRouter.emitFavourites({
             service: 'yandex_music',
-            uri: track.uri,
+            uri: uri,
             favourite: likedIds.indexOf(track_id) !== -1
         });
     }).fail(function (err) {
-        self.logger.error('[yandex_music] Unable to sync favourite state: ', err);
+        self.logger.error('[yandex_music] Unable to announce favourite state: ', err);
     });
 };
 
@@ -889,8 +894,8 @@ yandexMusic.prototype.getLikedTrackIds = function() {
 
 // Keeps the cached like list in step with likes we make ourselves.
 // Without this, a track liked here still counts as un-liked until the
-// cache expires, and syncFavouriteState then "corrects" it by dropping
-// the track from the favourites list the moment it plays again.
+// cache expires, so a track liked here would keep reporting itself as
+// un-liked - and the heart would go grey again the moment it played.
 yandexMusic.prototype.updateLikedCache = function(track_id, is_liked) {
     var self = this;
 
@@ -1011,6 +1016,13 @@ yandexMusic.prototype.onPushState = function (state) {
         if (state && state.service == 'yandex_music') {
             self.commandRouter.stateMachine.setConsumeUpdateService('mpd', true);
             self.positionAtPrefetch = -1;
+        }
+    }
+
+    if (state && state.service == 'yandex_music' && state.uri) {
+        self.lastPushedUri = state.uri;
+        if (state.uri !== self.announcedFavouriteUri) {
+            self.announceFavouriteState(state.uri);
         }
     }
 }
