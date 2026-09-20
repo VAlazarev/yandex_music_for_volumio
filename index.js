@@ -14,7 +14,11 @@ var getTrackUrl = require('./track.js');
 var playlist = require('./playlist.js');
 var proxy = require('./proxy.js');
 var likeApi = require('./like.js');
+var Api = require('./api.js');
 var util = require('util');
+
+// Port for the plugin's own like/dislike HTTP endpoint (see api.js).
+const API_PORT = 4000;
 
 // Sections of the "all stations" screen, in display order. The rotor
 // catalogue also returns micro-genre (~370 entries, far too many to browse)
@@ -56,6 +60,7 @@ function yandexMusic(context) {
     self.positionAtPrefetch = -1;
 
     self.proxy = new proxy();
+    self.api = new Api(self, self.logger);
 }
 
 yandexMusic.prototype.onVolumioStart = function()
@@ -86,6 +91,8 @@ yandexMusic.prototype.onStart = function() {
         self.proxy.start();
     }
 
+    self.api.start(API_PORT);
+
     // Unlike addToFavourites, playListManager.addToPlaylist has no
     // per-plugin hook at all, so we wrap it directly: for a yandex_music
     // track, the "+ add to playlist" button dislikes and skips it instead
@@ -109,6 +116,7 @@ yandexMusic.prototype.onStop = function() {
     self.removeFromBrowseSources();
 
     self.proxy.stop();
+    self.api.stop();
 
     if (self.origAddToPlaylist) {
         self.commandRouter.playListManager.addToPlaylist = self.origAddToPlaylist;
@@ -1154,11 +1162,67 @@ yandexMusic.prototype.dislikeAndSkip = function(track_id) {
     // Only skip if it's the track actually playing right now - disliking
     // one from a browse list or a "+" tap on some other item shouldn't
     // touch playback.
-    var current_id = (self.current_track && self.current_track.track_id) ?
-        self.current_track.track_id.split('@')[0].split(':')[0] : false;
-    if (current_id === track_id) {
+    if (self.currentTrackId() === track_id) {
         self.commandRouter.stateMachine.next();
     }
+};
+
+yandexMusic.prototype.currentTrackId = function() {
+    var self = this;
+
+    if (!self.current_track || !self.current_track.track_id) {
+        return false;
+    }
+    return self.current_track.track_id.split('@')[0].split(':')[0];
+};
+
+// Like / dislike the track playing right now. Exposed both over the
+// plugin's own HTTP endpoint (see api.js) and, being plain plugin
+// methods, over Volumio's socket 'callMethod' RPC.
+yandexMusic.prototype.likeCurrentTrack = function() {
+    var self = this;
+
+    var track_id = self.currentTrackId();
+    if (!self.uid || !track_id) {
+        return libQ.reject(new Error('nothing playing'));
+    }
+
+    self.updateLikedCache(track_id, true);
+    self.commandRouter.emitFavourites({
+        service: 'yandex_music',
+        uri: self.current_track.uri,
+        favourite: true
+    });
+
+    likeApi.likeTrack(self.client, self.uid, track_id).fail(function (err) {
+        self.logger.error('[yandex_music] Unable to like track: ', err);
+    });
+    likeApi.undislikeTrack(self.client, self.uid, track_id).fail(function (err) {
+        self.logger.error('[yandex_music] Unable to undislike track: ', err);
+    });
+
+    return libQ.resolve({liked: true, track: self.current_track.title, id: track_id});
+};
+
+yandexMusic.prototype.dislikeCurrentTrack = function() {
+    var self = this;
+
+    var track_id = self.currentTrackId();
+    if (!self.uid || !track_id) {
+        return libQ.reject(new Error('nothing playing'));
+    }
+
+    var title = self.current_track.title;
+
+    // A dislike supersedes a like, the way it does in the Yandex app.
+    self.updateLikedCache(track_id, false);
+    likeApi.unlikeTrack(self.client, self.uid, track_id).fail(function (err) {
+        self.logger.error('[yandex_music] Unable to unlike track: ', err);
+    });
+
+    self.dislikeAndSkip(track_id);
+
+    return libQ.resolve({disliked: true, skipped: true, track: title, id: track_id});
 };
 
 // Get state
